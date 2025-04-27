@@ -52,3 +52,33 @@ This program was fully developed and tested in **Solana Playground IDE**.
   Fees from swaps and offers are automatically routed to the treasury.
 
 ---
+
+## Program Workflow 💬
+
+1. **Initialize Pool**  
+   Set admin parameters like max partners, treasury account, min swap size, expiration rules.
+
+2. **Manage Whitelist and Token Pairs**  
+   Add/remove approved partners.  
+   Add/remove supported token pairs.
+
+3. **Trading Options**
+   - **Direct Swap:** Instant swap between two whitelisted partners.
+   - **OTC Offer:**  
+     - Maker escrows tokens and sets offer terms.
+     - Taker accepts the offer before expiration to execute trade.
+
+4. **Offer Lifecycle**
+   - **Create Offer:** Escrow tokens and define terms.
+   - **Accept Offer:** Swap tokens and collect treasury fee.
+   - **Cancel Offer:** Refund escrowed tokens before expiration.
+   - **Extend Offer:** Push out expiration once if needed.
+
+5. **Emergency Controls**
+   - Pause pool to freeze all trades.
+   - Resume trading when incident is resolved.
+
+6. **Expiration Handling**
+   - Expired offers can be closed manually by makers or automatically force-closed later (future upgrade-ready).
+
+---

@@ -108,3 +108,30 @@ The program emits events for all critical actions:
 This makes the OTC Pool **indexer-friendly** and easy to integrate into frontends, dashboards, and trading history UIs.
 
 ---
+
+## Error Handling 🚫
+
+Robust error codes ensure safe and predictable behavior:
+
+| Error Code                  | Description                                  |
+|:-----------------------------|:---------------------------------------------|
+| `Unauthorized`               | Caller lacks permission |
+| `PartnerLimitReached`        | Max partners already added |
+| `PartnerAlreadyExists`       | Partner already whitelisted |
+| `PartnerNotFound`            | Partner not in whitelist |
+| `PairAlreadyExists`          | Token pair already supported |
+| `PairNotFound`               | Supported token pair not found |
+| `PoolIsPaused`               | Pool is paused and cannot trade |
+| `UnauthorizedPartner`        | Caller is not a whitelisted partner |
+| `OfferAlreadyFulfilled`      | Offer already executed |
+| `OfferExpired`               | Offer expired and can't be accepted |
+| `OfferNotExpired`            | Offer still active (for expiration ops) |
+| `SwapBelowMinimum`           | Swap amount too small |
+| `InvalidFillAmount`          | Attempted to overfill or underfill offer |
+| `MintAlreadyWhitelisted`     | Token mint already in whitelist |
+| `MintNotWhitelisted`         | Token mint not found in whitelist |
+| `InvalidTreasuryAccount`     | Bad treasury account provided |
+| `InvalidExtension`           | Invalid attempt to extend offer |
+| `ExpirationTooLong`          | Offer expiration exceeds allowed max |
+
+---

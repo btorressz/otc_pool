@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use solana_program::{program::invoke, system_instruction};
 
+
 declare_id!("9s97f1eHD71SCRWCFVucTdEUPwwHEcPxWV9fDqE67EME"); 
 
 pub const NATIVE_MINT: Pubkey = Pubkey::new_from_array([0u8; 32]);
@@ -10,11 +11,13 @@ pub const NATIVE_MINT: Pubkey = Pubkey::new_from_array([0u8; 32]);
 pub mod otc_pool {
     use super::*;
 
+    /// Initialize the pool with dynamic partner limit, fee, treasury, and minimum swap size.
     pub fn initialize_pool(
         ctx: Context<InitializePool>,
         max_partners: u8,
         fee_bps: u16,
         treasury: Pubkey,
+        min_swap_amount: u64,
     ) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
         pool.authority = *ctx.accounts.authority.key;
@@ -24,15 +27,28 @@ pub mod otc_pool {
         pool.paused = false;
         pool.fee_bps = fee_bps;
         pool.treasury = treasury;
+        pool.min_swap_amount = min_swap_amount;
         emit!(PoolInitialized {
             authority: pool.authority,
             max_partners,
             fee_bps,
             treasury,
+            min_swap_amount,
         });
         Ok(())
     }
 
+    /// Hand off the pool authority to another address.
+    pub fn transfer_authority(ctx: Context<TransferAuthority>, new_authority: Pubkey) -> Result<()> {
+        let pool = &mut ctx.accounts.pool;
+        require_keys_eq!(pool.authority, ctx.accounts.authority.key(), OtcError::Unauthorized);
+        let previous = pool.authority;
+        pool.authority = new_authority;
+        emit!(AuthorityTransferred { previous, new: new_authority });
+        Ok(())
+    }
+
+    /// Whitelist a new partner (up to `max_partners`).
     pub fn add_partner(ctx: Context<ModifyPartner>, partner: Pubkey) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
         require_keys_eq!(pool.authority, ctx.accounts.authority.key(), OtcError::Unauthorized);
@@ -46,6 +62,7 @@ pub mod otc_pool {
         Ok(())
     }
 
+    /// Remove a partner from the whitelist.
     pub fn remove_partner(ctx: Context<ModifyPartner>, partner: Pubkey) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
         require_keys_eq!(pool.authority, ctx.accounts.authority.key(), OtcError::Unauthorized);
@@ -58,6 +75,7 @@ pub mod otc_pool {
         }
     }
 
+    /// Add a supported token pair.
     pub fn add_supported_pair(
         ctx: Context<ModifySupportedPair>,
         mint_a: Pubkey,
@@ -77,6 +95,7 @@ pub mod otc_pool {
         Ok(())
     }
 
+    /// Remove a supported token pair.
     pub fn remove_supported_pair(
         ctx: Context<ModifySupportedPair>,
         mint_a: Pubkey,
@@ -97,22 +116,31 @@ pub mod otc_pool {
         }
     }
 
+    /// Pause swapping and offers in emergencies.
     pub fn pause_pool(ctx: Context<ModifyPoolState>) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
         require_keys_eq!(pool.authority, ctx.accounts.authority.key(), OtcError::Unauthorized);
         pool.paused = true;
-        emit!(PoolPaused {});
+        emit!(PoolPaused {
+            admin: pool.authority,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
         Ok(())
     }
 
+    /// Resume pool activity.
     pub fn resume_pool(ctx: Context<ModifyPoolState>) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
         require_keys_eq!(pool.authority, ctx.accounts.authority.key(), OtcError::Unauthorized);
         pool.paused = false;
-        emit!(PoolResumed {});
+        emit!(PoolResumed {
+            admin: pool.authority,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
         Ok(())
     }
 
+    /// Immediate, atomic swap between two whitelisted partners.
     pub fn swap_direct(
         ctx: Context<SwapDirect>,
         amount_a: u64,
@@ -121,9 +149,14 @@ pub mod otc_pool {
         let pool = &ctx.accounts.pool;
         require!(!pool.paused, OtcError::PoolIsPaused);
 
+        // enforce minimum swap size
+        require!(
+            amount_a >= pool.min_swap_amount && amount_b >= pool.min_swap_amount,
+            OtcError::SwapBelowMinimum
+        );
+
         let party_a = *ctx.accounts.party_a.key;
         let party_b = *ctx.accounts.party_b.key;
-
         require!(
             pool.partners.contains(&party_a),
             OtcError::UnauthorizedPartner
@@ -133,6 +166,7 @@ pub mod otc_pool {
             OtcError::UnauthorizedPartner
         );
 
+        // ensure the mint pair is supported
         let mint_a = ctx.accounts.party_a_token_src.mint;
         let mint_b = ctx.accounts.party_b_token_src.mint;
         require!(
@@ -143,27 +177,31 @@ pub mod otc_pool {
             OtcError::PairNotSupported
         );
 
-        // Transfer A → B
-        let cpi_a = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.party_a_token_src.to_account_info(),
-                to: ctx.accounts.party_b_token_dest.to_account_info(),
-                authority: ctx.accounts.party_a.to_account_info(),
-            },
-        );
-        token::transfer(cpi_a, amount_a)?;
+        // transfer A → B
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.party_a_token_src.to_account_info(),
+                    to: ctx.accounts.party_b_token_dest.to_account_info(),
+                    authority: ctx.accounts.party_a.to_account_info(),
+                },
+            ),
+            amount_a,
+        )?;
 
-        // Transfer B → A
-        let cpi_b = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.party_b_token_src.to_account_info(),
-                to: ctx.accounts.party_a_token_dest.to_account_info(),
-                authority: ctx.accounts.party_b.to_account_info(),
-            },
-        );
-        token::transfer(cpi_b, amount_b)?;
+        // transfer B → A
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.party_b_token_src.to_account_info(),
+                    to: ctx.accounts.party_a_token_dest.to_account_info(),
+                    authority: ctx.accounts.party_b.to_account_info(),
+                },
+            ),
+            amount_b,
+        )?;
 
         emit!(SwapDirectExecuted {
             party_a,
@@ -171,11 +209,12 @@ pub mod otc_pool {
             mint_a,
             mint_b,
             amount_a,
-            amount_b
+            amount_b,
         });
         Ok(())
     }
 
+    /// Create a semi-private OTC offer in escrow.
     pub fn create_offer(
         ctx: Context<CreateOffer>,
         amount_a: u64,
@@ -185,12 +224,19 @@ pub mod otc_pool {
         let pool = &ctx.accounts.pool;
         require!(!pool.paused, OtcError::PoolIsPaused);
 
+        // enforce minimum swap size
+        require!(
+            amount_a >= pool.min_swap_amount && amount_b >= pool.min_swap_amount,
+            OtcError::SwapBelowMinimum
+        );
+
         let maker = *ctx.accounts.maker.key;
         require!(
             pool.partners.contains(&maker),
             OtcError::UnauthorizedPartner
         );
 
+        // ensure supported pair
         let mint_a = ctx.accounts.mint_a.key();
         let mint_b = ctx.accounts.mint_b.key();
         require!(
@@ -201,6 +247,7 @@ pub mod otc_pool {
             OtcError::PairNotSupported
         );
 
+        // init offer state
         let offer = &mut ctx.accounts.offer;
         offer.maker = maker;
         offer.mint_a = mint_a;
@@ -211,15 +258,18 @@ pub mod otc_pool {
         offer.fulfilled = false;
         offer.bump = ctx.bumps.offer;
 
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.maker_token_src.to_account_info(),
-                to: ctx.accounts.escrow_account.to_account_info(),
-                authority: ctx.accounts.maker.to_account_info(),
-            },
-        );
-        token::transfer(cpi_ctx, amount_a)?;
+        // deposit into escrow
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.maker_token_src.to_account_info(),
+                    to: ctx.accounts.escrow_account.to_account_info(),
+                    authority: ctx.accounts.maker.to_account_info(),
+                },
+            ),
+            amount_a,
+        )?;
 
         emit!(OfferCreated {
             maker,
@@ -227,40 +277,51 @@ pub mod otc_pool {
             mint_b,
             amount_a,
             amount_b,
-            expiration_ts
+            expiration_ts,
         });
         Ok(())
     }
 
+    /// Cancel an OTC offer before it's taken **and before expiration**.
     pub fn cancel_offer(ctx: Context<CancelOffer>) -> Result<()> {
-        // take immutable AccountInfo first
+        // snapshot account_info for authority use
         let offer_info = ctx.accounts.offer.to_account_info();
         let offer = &mut ctx.accounts.offer;
         let maker = *ctx.accounts.maker.key;
+
+        // only maker, only once
         require_keys_eq!(offer.maker, maker, OtcError::Unauthorized);
         require!(!offer.fulfilled, OtcError::OfferAlreadyFulfilled);
 
-        // prepare seeds for PDA
-        let seeds: &[&[u8]] = &[b"offer", offer.maker.as_ref(), &[offer.bump]];
-
-        // perform refund from escrow → maker
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_account.to_account_info(),
-                to: ctx.accounts.maker_token_dest.to_account_info(),
-                authority: offer_info.clone(),
-            },
+        // **expiration check**: can't cancel after expiration
+        let clock = &ctx.accounts.clock;
+        require!(
+            clock.unix_timestamp <= offer.expiration_ts,
+            OtcError::OfferExpired
         );
-        token::transfer(cpi_ctx.with_signer(&[seeds]), offer.amount_a)?;
+
+        // refund escrow → maker
+        let seeds = &[b"offer", offer.maker.as_ref(), &[offer.bump]];
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_account.to_account_info(),
+                    to: ctx.accounts.maker_token_dest.to_account_info(),
+                    authority: offer_info.clone(),
+                },
+            )
+            .with_signer(&[seeds]),
+            offer.amount_a,
+        )?;
 
         offer.fulfilled = true;
         emit!(OfferCancelled { maker });
         Ok(())
     }
 
+    /// Accept an OTC offer: swap B for A, take fee, send to treasury.
     pub fn accept_offer(ctx: Context<AcceptOffer>) -> Result<()> {
-        // take immutable AccountInfo first
         let offer_info = ctx.accounts.offer.to_account_info();
         let pool = &ctx.accounts.pool;
         require!(!pool.paused, OtcError::PoolIsPaused);
@@ -273,24 +334,34 @@ pub mod otc_pool {
         );
         require!(!offer.fulfilled, OtcError::OfferAlreadyFulfilled);
 
+        // check expiration
         let clock = &ctx.accounts.clock;
         require!(
             clock.unix_timestamp <= offer.expiration_ts,
             OtcError::OfferExpired
         );
 
-        // taker → maker (Token B)
-        let cpi_b = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.taker_token_src.to_account_info(),
-                to: ctx.accounts.maker_token_dest.to_account_info(),
-                authority: ctx.accounts.taker.to_account_info(),
-            },
+        // **treasury whitelist check**
+        require_keys_eq!(
+            ctx.accounts.treasury_token_account.owner,
+            pool.treasury,
+            OtcError::InvalidTreasuryAccount
         );
-        token::transfer(cpi_b, offer.amount_b)?;
 
-        // compute fee & remainder
+        // taker → maker (Token B)
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.taker_token_src.to_account_info(),
+                    to: ctx.accounts.maker_token_dest.to_account_info(),
+                    authority: ctx.accounts.taker.to_account_info(),
+                },
+            ),
+            offer.amount_b,
+        )?;
+
+        // compute fee & remainder on Token A
         let fee_amount = (offer.amount_a as u128)
             .checked_mul(pool.fee_bps as u128)
             .unwrap()
@@ -298,30 +369,35 @@ pub mod otc_pool {
             .unwrap() as u64;
         let amount_after_fee = offer.amount_a.checked_sub(fee_amount).unwrap();
 
-        // seeds for PDA authority
-        let seeds: &[&[u8]] = &[b"offer", offer.maker.as_ref(), &[offer.bump]];
+        let seeds = &[b"offer", offer.maker.as_ref(), &[offer.bump]];
 
         // escrow → treasury (fee)
-        let cpi_fee = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_account.to_account_info(),
-                to: ctx.accounts.treasury_token_account.to_account_info(),
-                authority: offer_info.clone(),
-            },
-        );
-        token::transfer(cpi_fee.with_signer(&[seeds]), fee_amount)?;
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_account.to_account_info(),
+                    to: ctx.accounts.treasury_token_account.to_account_info(),
+                    authority: offer_info.clone(),
+                },
+            )
+            .with_signer(&[seeds]),
+            fee_amount,
+        )?;
 
         // escrow → taker (remaining Token A)
-        let cpi_a = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.escrow_account.to_account_info(),
-                to: ctx.accounts.taker_token_dest.to_account_info(),
-                authority: offer_info,
-            },
-        );
-        token::transfer(cpi_a.with_signer(&[seeds]), amount_after_fee)?;
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_account.to_account_info(),
+                    to: ctx.accounts.taker_token_dest.to_account_info(),
+                    authority: offer_info,
+                },
+            )
+            .with_signer(&[seeds]),
+            amount_after_fee,
+        )?;
 
         offer.fulfilled = true;
         emit!(OfferExecuted {
@@ -330,11 +406,34 @@ pub mod otc_pool {
             mint_a: offer.mint_a,
             mint_b: offer.mint_b,
             amount_a: offer.amount_a,
-            amount_b: offer.amount_b
+            amount_b: offer.amount_b,
+        });
+        Ok(())
+    }
+
+    /// Extend an existing OTC offer's expiration (must be longer).
+    pub fn extend_offer(
+        ctx: Context<ExtendOffer>,
+        new_expiration_ts: i64,
+    ) -> Result<()> {
+        let offer = &mut ctx.accounts.offer;
+        let maker = *ctx.accounts.maker.key;
+        require_keys_eq!(offer.maker, maker, OtcError::Unauthorized);
+        require!(!offer.fulfilled, OtcError::OfferAlreadyFulfilled);
+        require!(
+            new_expiration_ts > offer.expiration_ts,
+            OtcError::InvalidExtension
+        );
+        offer.expiration_ts = new_expiration_ts;
+        emit!(OfferExtended {
+            maker,
+            new_expiration_ts,
         });
         Ok(())
     }
 }
+
+/// ========== State & Events ==========
 
 #[account]
 pub struct Pool {
@@ -345,6 +444,7 @@ pub struct Pool {
     pub paused: bool,
     pub fee_bps: u16,
     pub treasury: Pubkey,
+    pub min_swap_amount: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -365,14 +465,19 @@ pub struct Offer {
     pub bump: u8,
 }
 
-/// Events
-
 #[event]
 pub struct PoolInitialized {
     pub authority: Pubkey,
     pub max_partners: u8,
     pub fee_bps: u16,
     pub treasury: Pubkey,
+    pub min_swap_amount: u64,
+}
+
+#[event]
+pub struct AuthorityTransferred {
+    pub previous: Pubkey,
+    pub new: Pubkey,
 }
 
 #[event]
@@ -398,10 +503,16 @@ pub struct SupportedPairRemoved {
 }
 
 #[event]
-pub struct PoolPaused {}
+pub struct PoolPaused {
+    pub admin: Pubkey,
+    pub timestamp: i64,
+}
 
 #[event]
-pub struct PoolResumed {}
+pub struct PoolResumed {
+    pub admin: Pubkey,
+    pub timestamp: i64,
+}
 
 #[event]
 pub struct SwapDirectExecuted {
@@ -438,7 +549,13 @@ pub struct OfferExecuted {
     pub amount_b: u64,
 }
 
-/// Account Contexts
+#[event]
+pub struct OfferExtended {
+    pub maker: Pubkey,
+    pub new_expiration_ts: i64,
+}
+
+/// ========== Accounts Contexts ==========
 
 #[derive(Accounts)]
 pub struct InitializePool<'info> {
@@ -448,6 +565,13 @@ pub struct InitializePool<'info> {
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct TransferAuthority<'info> {
+    #[account(mut, has_one = authority)]
+    pub pool: Account<'info, Pool>,
+    pub authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -491,7 +615,6 @@ pub struct SwapDirect<'info> {
     pub party_a_token_dest: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -528,8 +651,8 @@ pub struct CreateOffer<'info> {
     pub mint_a: Account<'info, Mint>,
     pub mint_b: Account<'info, Mint>,
 
-    pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
@@ -549,6 +672,9 @@ pub struct CancelOffer<'info> {
 
     #[account(mut, token::authority = maker, token::mint = offer.mint_a)]
     pub maker_token_dest: Account<'info, TokenAccount>,
+
+    /// Clock for expiration check
+    pub clock: Sysvar<'info, Clock>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -576,29 +702,34 @@ pub struct AcceptOffer<'info> {
     #[account(mut, token::authority = taker, token::mint = offer.mint_a)]
     pub taker_token_dest: Account<'info, TokenAccount>,
 
-    #[account(mut, token::authority = pool.treasury, token::mint = offer.mint_a)]
+    #[account(mut)]
     pub treasury_token_account: Account<'info, TokenAccount>,
 
+    pub clock: Sysvar<'info, Clock>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
-    pub clock: Sysvar<'info, Clock>,
 }
 
-/// Size constants
+#[derive(Accounts)]
+pub struct ExtendOffer<'info> {
+    #[account(mut, has_one = maker)]
+    pub offer: Account<'info, Offer>,
+    #[account(signer)]
+    pub maker: AccountInfo<'info>,
+}
 
 impl Pool {
     pub const MAX_PARTNERS: usize = 255;
     pub const MAX_PAIRS: usize = 10;
-    pub const LEN: usize = 8
-        + 32
-        + 1
-        + 4
-        + (32 * Self::MAX_PARTNERS)
-        + 4
-        + (Pair::LEN * Self::MAX_PAIRS)
-        + 1
-        + 2
-        + 32;
+    pub const LEN: usize = 8 // discriminator
+        + 32  // authority
+        + 1   // max_partners
+        + 4 + 32 * Self::MAX_PARTNERS  // partners vec
+        + 4 + Pair::LEN * Self::MAX_PAIRS // supported_pairs vec
+        + 1   // paused
+        + 2   // fee_bps
+        + 32  // treasury
+        + 8;  // min_swap_amount
 }
 
 impl Pair {
@@ -606,10 +737,16 @@ impl Pair {
 }
 
 impl Offer {
-    pub const LEN: usize = 8 + 96 + 16 + 8 + 1 + 1;
+    pub const LEN: usize = 8   // discriminator
+        + 32  // maker
+        + 32  // mint_a
+        + 32  // mint_b
+        + 8   // amount_a
+        + 8   // amount_b
+        + 8   // expiration_ts
+        + 1   // fulfilled
+        + 1;  // bump
 }
-
-/// Errors
 
 #[error_code]
 pub enum OtcError {
@@ -635,4 +772,10 @@ pub enum OtcError {
     OfferAlreadyFulfilled,
     #[msg("Offer expired")]
     OfferExpired,
+    #[msg("Swap amount below minimum")]
+    SwapBelowMinimum,
+    #[msg("Invalid treasury account")]
+    InvalidTreasuryAccount,
+    #[msg("Invalid extension")]
+    InvalidExtension,
 }

@@ -82,3 +82,29 @@ This program was fully developed and tested in **Solana Playground IDE**.
    - Expired offers can be closed manually by makers or automatically force-closed later (future upgrade-ready).
 
 ---
+
+## Event Tracking ✨
+
+The program emits events for all critical actions:
+
+- `PoolInitialized`
+- `AuthorityTransferred`
+- `TreasuryUpdated`
+- `MintWhitelisted`
+- `MintRemoved`
+- `SupportedPairAdded`
+- `SupportedPairRemoved`
+- `PartnerAdded`
+- `PartnerRemoved`
+- `SwapDirectExecuted`
+- `OfferCreated`
+- `OfferCancelled`
+- `OfferExecuted`
+- `OfferExtended`
+- `OfferExpired`
+- `PoolPaused`
+- `PoolResumed`
+
+This makes the OTC Pool **indexer-friendly** and easy to integrate into frontends, dashboards, and trading history UIs.
+
+---

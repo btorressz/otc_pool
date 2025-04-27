@@ -4,7 +4,7 @@
 
 ### ***Overview***
 
-The OTC Pool Program is a Solana based smart contract built with Anchor, designed to facilitate **semi-private OTC trading**, **instant direct swaps**, **whitelisted partner management**, and **escrow-based trade offers**. It enables flexible, secure, and customizable peer-to-peer trading ecosystems without intermediaries. 
+The OTC Pool Program is a Solana based smart contract(program) built with Anchor, designed to facilitate **semi-private OTC trading**, **instant direct swaps**, **whitelisted partner management**, and **escrow-based trade offers**. It enables flexible, secure, and customizable peer-to-peer trading ecosystems without intermediaries. 
 
 This Program was made in Solana Playground IDE
 

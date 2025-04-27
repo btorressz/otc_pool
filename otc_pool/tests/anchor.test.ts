@@ -12,6 +12,7 @@ describe("OTC Pool Tests", () => {
     const minSwapAmount = new BN(1000); // Minimum swap amount (u64)
     const maxExpirationSecs = new BN(3600); // Maximum expiration time in seconds (i64)
     const partners = []; // Empty array for initial partners (PublicKey[])
+    const initialWhitelistedMints = [new web3.Keypair().publicKey]; // Example whitelisted mints (PublicKey[])
 
     // Send the transaction to initialize the pool
     const txHash = await pg.program.methods
@@ -21,7 +22,7 @@ describe("OTC Pool Tests", () => {
         treasury,
         minSwapAmount,
         maxExpirationSecs,
-        partners
+        initialWhitelistedMints // Pass the new parameter here
       )
       .accounts({
         pool: poolKeypair.publicKey,
@@ -47,6 +48,7 @@ describe("OTC Pool Tests", () => {
       treasury: poolAccount.treasury.toBase58(),
       minSwapAmount: poolAccount.minSwapAmount.toString(),
       maxExpirationSecs: poolAccount.maxExpirationSecs.toString(),
+      initialWhitelistedMints: poolAccount.whitelistedMints.map((mint: web3.PublicKey) => mint.toBase58()),
       partners: poolAccount.partners.map((p: web3.PublicKey) => p.toBase58()),
     });
 
@@ -57,6 +59,7 @@ describe("OTC Pool Tests", () => {
     assert.strictEqual(poolAccount.treasury.toBase58(), treasury.toBase58());
     assert(minSwapAmount.eq(new BN(poolAccount.minSwapAmount)));
     assert(maxExpirationSecs.eq(new BN(poolAccount.maxExpirationSecs)));
+    assert.deepStrictEqual(poolAccount.whitelistedMints.map((mint: web3.PublicKey) => mint.toBase58()), initialWhitelistedMints.map((mint: web3.PublicKey) => mint.toBase58()));
     assert.deepStrictEqual(poolAccount.partners, partners);
   });
 });

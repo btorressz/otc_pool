@@ -15,6 +15,6 @@ It enables **secure, flexible, and customizable peer-to-peer trading** without i
 This program was fully developed and tested in **Solana Playground IDE**.
 
 **Devnet deployment:**  
-[View Program on Solana Devnet Explorer](https://explorer.solana.com/address/9s97f1eHD71SCRWCFVucTdEUPwwHEcPxWV9fDqE67EME?cluster=devnet)
+(https://explorer.solana.com/address/9s97f1eHD71SCRWCFVucTdEUPwwHEcPxWV9fDqE67EME?cluster=devnet)
 
 ---
